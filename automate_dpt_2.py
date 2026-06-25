@@ -3,9 +3,13 @@ import re
 import requests
 import pandas as pd
 import gspread
+
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from google.oauth2.service_account import Credentials 
+from google.oauth2.service_account import Credentials
+
+
+# ================= CONFIG =================
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -26,35 +30,35 @@ TOKEN = TOKEN.strip().strip('"').strip("'")
 SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
 TARGET_DATE = "2026-06-26"
 
+
+
+
+# Deputy API
+
+
+
+
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
     "Content-Type": "application/json",
     "Accept": "application/json",
-}
+}  
 
-NY = ZoneInfo("America/New_York")
-
-# Deputy API
+NY = ZoneInfo("America/New_York") 
 
 INSTALL_URL = "https://ptofthecity.na.deputy.com"
 API_BASE = f"{INSTALL_URL}/api/v1"
 
-HEADERS = {
-    "Authorization": f"Bearer {TOKEN}",
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-}
-
 # Google Sheets
 GOOGLE_CREDENTIALS_FILE = r"D:\depty_overtime\service_account.json"
-SPREADSHEET_ID =os.getenv("SPREADSHEET_ID")
+SPREADSHEET_ID = "1O09rHLb6jQIqSUrlt4cWFd7X3yA1-fWYeD2AQulVJZk"
 
 # Existing Google Sheet tab name
 SHEET_NAME = "Sheet1"
 
 # Clinic name column in Sheet1
 # D = 4
-CLINIC_COLUMN_NUMBER = 4
+CLINIC_COLUMN_NUMBER = 30
 
 # Headers are in row 2, clinic data starts row 3
 FIRST_DATA_ROW = 2
@@ -376,12 +380,13 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     Writes totals into existing Sheet1.
 
     Column D = clinic names
-    Column G = PT Hours
-    Column H = Assistant Hours
-    Column I = PCC Hours
+
+    V = PT Hours
+    W = Assistant / PTA Hours
+    X = PCC Hours
 
     It does NOT write headers.
-    It writes numbers only from row 3.
+    It writes numbers only under existing headers.
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
@@ -426,16 +431,16 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
 
     last_row = FIRST_DATA_ROW + len(output_values) - 1
 
-    # Clear only old numbers, not headers
-    ws.batch_clear([f"G{FIRST_DATA_ROW}:I{last_row}"])
+    # Clear only old numbers in AF:AH
+    ws.batch_clear([f"V{FIRST_DATA_ROW}:X{last_row}"])
 
-    # Write numbers only
+    # Write numbers only into AF:AH
     ws.update(
-        range_name=f"G{FIRST_DATA_ROW}:I{last_row}",
+        range_name=f"V{FIRST_DATA_ROW}:X{last_row}",
         values=output_values
     )
 
-    print(f"\nUpdated {SHEET_NAME} G{FIRST_DATA_ROW}:I{last_row}.")
+    print(f"\nUpdated {SHEET_NAME} V{FIRST_DATA_ROW}:X{last_row}.")
 
     if unmatched:
         print("\nUnmatched clinics from Sheet1 column D:")
@@ -445,8 +450,6 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
         print("\nDeputy clinic names available:")
         for clinic in pivot["Clinic_Name"].tolist():
             print("-", clinic)
-
-
 # ================= MAIN REPORT =================
 
 def run_report():

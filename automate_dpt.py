@@ -24,7 +24,7 @@ if not SPREADSHEET_ID:
 
 TOKEN = TOKEN.strip().strip('"').strip("'")
 SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
-TARGET_DATE = os.getenv("TARGET_DATE")
+TARGET_DATE = os.getenv("TARGET_DATE", "").strip().strip('"').strip("'") or None
 
 if TARGET_DATE:
     TARGET_DATE = TARGET_DATE.strip().strip('"').strip("'")
@@ -69,7 +69,7 @@ FIRST_DATA_ROW = 2
 # ================= DATE FUNCTIONS =================
 
 def get_target_date():
-    if TARGET_DATE is not None:
+    if TARGET_DATE:
         return TARGET_DATE
 
     yesterday = datetime.now(NY).date() - timedelta(days=1)

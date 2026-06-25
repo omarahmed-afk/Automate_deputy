@@ -24,7 +24,10 @@ if not SPREADSHEET_ID:
 
 TOKEN = TOKEN.strip().strip('"').strip("'")
 SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
-TARGET_DATE = "2026-06-26"
+TARGET_DATE = os.getenv("TARGET_DATE")
+
+if TARGET_DATE:
+    TARGET_DATE = TARGET_DATE.strip().strip('"').strip("'")
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
@@ -46,7 +49,10 @@ HEADERS = {
 }
 
 # Google Sheets
-GOOGLE_CREDENTIALS_FILE = r"D:\depty_overtime\service_account.json"
+GOOGLE_CREDENTIALS_FILE = os.getenv(
+    "GOOGLE_CREDENTIALS_FILE",
+    r"D:\depty_overtime\service_account.json"
+)
 SPREADSHEET_ID =os.getenv("SPREADSHEET_ID")
 
 # Existing Google Sheet tab name

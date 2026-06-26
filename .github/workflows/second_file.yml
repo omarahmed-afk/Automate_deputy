@@ -2,6 +2,12 @@ name: Run Automate DPT 2
 
 on:
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: "Optional date YYYY-MM-DD. Leave empty to use yesterday NY time."
+        required: false
+        default: ""
+
   schedule:
     - cron: "30 12 * * *"
       timezone: "Africa/Cairo"
@@ -9,6 +15,7 @@ on:
 jobs:
   run-automate-dpt-2:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repo
@@ -20,17 +27,20 @@ jobs:
           python-version: "3.12"
 
       - name: Install requirements
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Create Google service account file
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: |
-          python -c "import os, pathlib; pathlib.Path('service_account.json').write_text(os.environ['GOOGLE_CREDENTIALS_JSON'])"
+          printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
           python -m json.tool service_account.json > /dev/null
 
       - name: Run automate_dpt_2
         env:
           DEPUTY_TOKEN: ${{ secrets.DEPUTY_TOKEN }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: python automate_dpt_2.py
+          GOOGLE_CREDENTIALS_FILE: service_account.json
+          TARGET_DATE: ${{ github.event.inputs.target_date }}
+        run: |
+          python automate_dpt_2.py

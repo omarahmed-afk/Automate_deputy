@@ -36,19 +36,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create Google service account file
-        run: |
-          printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
-          echo "service_account.json size:"
-          wc -c service_account.json
-          echo "Validate JSON:"
-          python -m json.tool service_account.json > /dev/null
-
       - name: Run automate_dpt_2
         env:
           DEPUTY_TOKEN: ${{ secrets.DEPUTY_TOKEN }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          GOOGLE_CREDENTIALS_FILE: service_account.json
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           TARGET_DATE: ${{ github.event.inputs.target_date }}
-        run: |
-          python automate_dpt_2.py
+        run: python automate_dpt_2.py

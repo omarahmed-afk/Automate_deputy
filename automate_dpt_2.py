@@ -31,9 +31,6 @@ SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
 
 # Deputy API
 
-
-
-
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
     "Content-Type": "application/json",
@@ -61,8 +58,7 @@ FIRST_DATA_ROW = 2
 
 
 # ================= DATE FUNCTIONS =================
-
-TARGET_DATE = None
+TARGET_DATE = os.getenv("TARGET_DATE") or None
 
 
 def get_target_date():
@@ -297,16 +293,25 @@ def open_google_sheet():
         "https://www.googleapis.com/auth/drive"
     ]
 
-    with open(GOOGLE_CREDENTIALS_FILE, "r") as f:
-        service_account_info = json.load(f)
+    google_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+    if google_json:
+        service_account_info = json.loads(google_json)
+        creds = Credentials.from_service_account_info(
+            service_account_info,
+            scopes=scopes
+        )
+    else:
+        with open(GOOGLE_CREDENTIALS_FILE, "r") as f:
+            service_account_info = json.load(f)
+
+        creds = Credentials.from_service_account_file(
+            GOOGLE_CREDENTIALS_FILE,
+            scopes=scopes
+        )
 
     print("Service account email:")
     print(service_account_info["client_email"])
-
-    creds = Credentials.from_service_account_file(
-        GOOGLE_CREDENTIALS_FILE,
-        scopes=scopes
-    )
 
     gc = gspread.authorize(creds)
 
@@ -318,7 +323,6 @@ def open_google_sheet():
         print("-", ws.title)
 
     return spreadsheet
-
 
 def build_clinic_role_totals(final_schedule):
     df = final_schedule.copy()

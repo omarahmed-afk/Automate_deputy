@@ -69,11 +69,8 @@ FIRST_DATA_ROW = 2
 # ================= DATE FUNCTIONS =================
 
 def get_target_date():
-    if TARGET_DATE:
-        return TARGET_DATE
-
-    yesterday = datetime.now(NY).date() - timedelta(days=1)
-    return str(yesterday)
+    tomorrow = datetime.now(NY).date() + timedelta(days=1)
+    return str(tomorrow)
 
 
 def get_day_range_unix(target_date):

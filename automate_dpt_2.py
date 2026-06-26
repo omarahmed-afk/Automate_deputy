@@ -28,10 +28,6 @@ if not SPREADSHEET_ID:
 
 TOKEN = TOKEN.strip().strip('"').strip("'")
 SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
-TARGET_DATE = "2026-06-26"
-
-
-
 
 # Deputy API
 
@@ -50,14 +46,14 @@ INSTALL_URL = "https://ptofthecity.na.deputy.com"
 API_BASE = f"{INSTALL_URL}/api/v1"
 
 # Google Sheets
-GOOGLE_CREDENTIALS_FILE = r"D:\depty_overtime\service_account.json"
-SPREADSHEET_ID = "1O09rHLb6jQIqSUrlt4cWFd7X3yA1-fWYeD2AQulVJZk"
+# Google Sheets
+GOOGLE_CREDENTIALS_FILE = BASE_DIR / "service_account.json"
 
 # Existing Google Sheet tab name
 SHEET_NAME = "Sheet1"
 
 # Clinic name column in Sheet1
-# D = 4
+# AD = 4
 CLINIC_COLUMN_NUMBER = 30
 
 # Headers are in row 2, clinic data starts row 3
@@ -65,6 +61,9 @@ FIRST_DATA_ROW = 2
 
 
 # ================= DATE FUNCTIONS =================
+
+TARGET_DATE = None
+
 
 def get_target_date():
     if TARGET_DATE is not None:

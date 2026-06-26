@@ -1,0 +1,32 @@
+name: Run Automate DPT 2
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 12 * * *"
+      timezone: "Africa/Cairo"
+
+jobs:
+  run-automate-dpt-2:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install requirements
+        run: pip install -r requirements.txt
+
+      - name: Create Google service account file
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
+
+      - name: Run automate_dpt_2
+        env:
+          DEPUTY_TOKEN: ${{ secrets.DEPUTY_TOKEN }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: python automate_dpt_2.py

@@ -23,7 +23,11 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Create Google service account file
-        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > service_account.json
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          python -c "import os, pathlib; pathlib.Path('service_account.json').write_text(os.environ['GOOGLE_CREDENTIALS_JSON'])"
+          python -m json.tool service_account.json > /dev/null
 
       - name: Run automate_dpt_2
         env:

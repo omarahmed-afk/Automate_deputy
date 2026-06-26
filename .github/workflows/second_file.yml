@@ -10,7 +10,6 @@ on:
 
   schedule:
     - cron: "30 12 * * *"
-      timezone: "Africa/Cairo"
 
 jobs:
   run-automate-dpt-2:
@@ -20,6 +19,12 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Show current files
+        run: |
+          pwd
+          ls -la
+          ls -la .github/workflows
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,6 +39,9 @@ jobs:
       - name: Create Google service account file
         run: |
           printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+          echo "service_account.json size:"
+          wc -c service_account.json
+          echo "Validate JSON:"
           python -m json.tool service_account.json > /dev/null
 
       - name: Run automate_dpt_2

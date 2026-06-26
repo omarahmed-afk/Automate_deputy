@@ -59,8 +59,8 @@ FIRST_DATA_ROW = 2
 
 # ================= DATE FUNCTIONS =================
 def get_target_date():
-    yesterday = datetime.now(NY).date() - timedelta(days=1)
-    return str(yesterday)
+    today = datetime.now(NY).date()
+    return str(today)
 
 def get_day_range_unix(target_date):
     start_dt = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=NY)

@@ -65,8 +65,8 @@ LAST_DATA_ROW = FIRST_DATA_ROW + DAILY_BLOCK_ROWS - 1
 # V = PT
 # W = Assistant
 # X = PCC
-OUTPUT_START_COL = "V"
-OUTPUT_END_COL = "X"
+OUTPUT_START_COL = "U"
+OUTPUT_END_COL = "W"
 
 # Copy template from A:X
 # A=0, X=23, end index is exclusive = 24

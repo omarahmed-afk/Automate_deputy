@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import requests
 import pandas as pd
 import gspread
@@ -8,17 +9,19 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 
-
-# ================= CONFIG =================
 from dotenv import load_dotenv
 import os
 from pathlib import Path
 
+
 # ================= CONFIG =================
+
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+
 TOKEN = os.getenv("DEPUTY_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+TARGET_DATE = os.getenv("TARGET_DATE", "").strip().strip('"').strip("'") or None
 
 if not TOKEN:
     raise ValueError("DEPUTY_TOKEN is missing. Check your .env file.")
@@ -29,45 +32,105 @@ if not SPREADSHEET_ID:
 TOKEN = TOKEN.strip().strip('"').strip("'")
 SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
 
-# Deputy API
+NY = ZoneInfo("America/New_York")
+
+INSTALL_URL = "https://ptofthecity.na.deputy.com"
+API_BASE = f"{INSTALL_URL}/api/v1"
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
     "Content-Type": "application/json",
     "Accept": "application/json",
-}  
+}
 
-NY = ZoneInfo("America/New_York") 
+GOOGLE_CREDENTIALS_FILE = os.getenv(
+    "GOOGLE_CREDENTIALS_FILE",
+    str(BASE_DIR / "service_account.json")
+)
 
-INSTALL_URL = "https://ptofthecity.na.deputy.com"
-API_BASE = f"{INSTALL_URL}/api/v1"
-
-# Google Sheets
-# Google Sheets
-GOOGLE_CREDENTIALS_FILE = BASE_DIR / "service_account.json"
-
-# Existing Google Sheet tab name
 SHEET_NAME = "Sheet1"
 
-# Clinic name column in Sheet1
-# AD = 4
-CLINIC_COLUMN_NUMBER = 30
+# A = Date
 DATE_COLUMN_NUMBER = 1
-# Headers are in row 2, clinic data starts row 3
+
+# D = Location / Clinic names
+CLINIC_COLUMN_NUMBER = 4
+
+# Daily block rows
 FIRST_DATA_ROW = 2
 DAILY_BLOCK_ROWS = 32
 LAST_DATA_ROW = FIRST_DATA_ROW + DAILY_BLOCK_ROWS - 1
 
+# automate_dpt_2 output columns
+# V = PT
+# W = Assistant
+# X = PCC
+OUTPUT_START_COL = "V"
+OUTPUT_END_COL = "X"
+
+# Copy template from A:X
+# A=0, X=23, end index is exclusive = 24
+TEMPLATE_END_COLUMN_INDEX = 24
+
+
 # ================= DATE FUNCTIONS =================
+
 def get_target_date():
+    """
+    If TARGET_DATE exists, use it.
+    Otherwise use yesterday based on New York time.
+    """
+
+    if TARGET_DATE:
+        datetime.strptime(TARGET_DATE, "%Y-%m-%d")
+        return TARGET_DATE
+
     yesterday = datetime.now(NY).date() - timedelta(days=1)
     return str(yesterday)
+
 
 def get_day_range_unix(target_date):
     start_dt = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=NY)
     end_dt = start_dt + timedelta(days=1)
 
     return int(start_dt.timestamp()), int(end_dt.timestamp())
+
+
+def format_sheet_date(target_date):
+    """
+    Convert 2026-06-29 to 6/29/2026.
+    """
+
+    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    return f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
+
+
+def normalize_sheet_date(value):
+    """
+    Return normalized m/d/yyyy only if value is a real date.
+    Otherwise return empty string.
+
+    Examples:
+    2026-06-29 -> 6/29/2026
+    6/29/2026  -> 6/29/2026
+    """
+
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+
+    if not s:
+        return ""
+
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+        try:
+            d = datetime.strptime(s, fmt).date()
+            return f"{d.month}/{d.day}/{d.year}"
+        except ValueError:
+            pass
+
+    return ""
 
 
 # ================= DEPUTY API =================
@@ -111,11 +174,9 @@ def map_role(role):
     if role_clean == "":
         return "Other"
 
-    # PT
     if "physical therapist" in role_clean or "physical threapist" in role_clean:
         return "PT"
 
-    # Assistant = PTA + Aide
     if (
         "physical therapy assistant" in role_clean
         or role_clean == "pta"
@@ -123,7 +184,6 @@ def map_role(role):
     ):
         return "Assistant"
 
-    # PCC
     if (
         "patient care coordinator" in role_clean
         or "patients care coordinator" in role_clean
@@ -208,7 +268,6 @@ def build_schedule_df(roster_df):
         "MatchedByTimesheet": "Timesheet_Id"
     })
 
-    # Remove empty employee rows
     schedule_df["Employee_Name"] = (
         schedule_df["Employee_Name"]
         .fillna("")
@@ -222,10 +281,8 @@ def build_schedule_df(roster_df):
         (schedule_df["Employee_Name"].str.lower() != "nan")
     ].copy()
 
-    # Map roles into PT / Assistant / PCC / Other
     schedule_df["Role_Mapped"] = schedule_df["Role_Name"].apply(map_role)
 
-    # Clean shift time
     schedule_df["Start_Clean"] = schedule_df["Scheduled_Start"].apply(clean_time)
     schedule_df["End_Clean"] = schedule_df["Scheduled_End"].apply(clean_time)
 
@@ -233,7 +290,6 @@ def build_schedule_df(roster_df):
         schedule_df["Start_Clean"] + " – " + schedule_df["End_Clean"]
     )
 
-    # Convert Unix to New York datetime
     schedule_df["Start_DT_NY"] = (
         pd.to_datetime(schedule_df["Start_Unix"], unit="s", utc=True)
         .dt.tz_convert(NY)
@@ -246,7 +302,6 @@ def build_schedule_df(roster_df):
 
     schedule_df["Date_Clean"] = schedule_df["Start_DT_NY"].dt.strftime("%Y-%m-%d")
 
-    # Total hours from scheduled start/end
     schedule_df["Total_Hours"] = (
         pd.to_numeric(schedule_df["End_Unix"], errors="coerce") -
         pd.to_numeric(schedule_df["Start_Unix"], errors="coerce")
@@ -318,6 +373,7 @@ def open_google_sheet():
 
     return spreadsheet
 
+
 def build_clinic_role_totals(final_schedule):
     df = final_schedule.copy()
 
@@ -326,13 +382,11 @@ def build_clinic_role_totals(final_schedule):
         errors="coerce"
     ).fillna(0)
 
-    # Sum hours by clinic and role
     clinic_totals = (
         df.groupby(["Clinic_Name", "Role_Mapped"], as_index=False)["Total_Hours"]
         .sum()
     )
 
-    # Pivot role totals into columns
     pivot = (
         clinic_totals
         .pivot_table(
@@ -347,7 +401,6 @@ def build_clinic_role_totals(final_schedule):
 
     pivot.columns.name = None
 
-    # Make sure required output columns exist
     for col in ["PT", "Assistant", "PCC"]:
         if col not in pivot.columns:
             pivot[col] = 0
@@ -372,40 +425,141 @@ def build_clinic_role_totals(final_schedule):
     return pivot[["Clinic_Name", "Clinic_Key", "PT", "Assistant", "PCC"]]
 
 
-def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
+# ================= DATE-BASED UPDATE LOGIC =================
+
+def find_existing_date_start_row(ws, sheet_date):
     """
-    Safe update mode.
+    Search only column A.
+    If date exists, return the row number.
+    If not, return None.
+    """
 
-    Reads only current block clinics from column D.
-    Updates only current block:
-    R = Date
-    V = PT Hours
-    W = Assistant Hours
-    X = PCC Hours
+    target = normalize_sheet_date(sheet_date)
+    col_a_values = ws.col_values(DATE_COLUMN_NUMBER)
 
-    It does NOT insert rows.
-    It does NOT update old dates below.
+    for row_number, value in enumerate(col_a_values, start=1):
+        if normalize_sheet_date(value) == target:
+            return row_number
+
+    return None
+
+
+def get_next_daily_block_start_row_by_date(ws):
+    """
+    Find next block based only on dates in column A.
+
+    Example:
+    A2  = 6/28/2026
+    A34 = 6/29/2026
+    next = 66
+    """
+
+    col_a_values = ws.col_values(DATE_COLUMN_NUMBER)
+
+    date_rows = []
+
+    for row_number, value in enumerate(col_a_values, start=1):
+        if normalize_sheet_date(value):
+            date_rows.append(row_number)
+
+    if not date_rows:
+        return FIRST_DATA_ROW
+
+    last_date_row = max(date_rows)
+    return last_date_row + DAILY_BLOCK_ROWS
+
+
+def append_or_update_daily_report_by_date(spreadsheet, final_schedule):
+    """
+    Main logic for automate_dpt_2.
+
+    1. Get target date.
+    2. Search for that date in column A.
+    3. If date exists:
+        - Fill V:X for that same date block.
+        - Do NOT update/fill date.
+    4. If date does not exist:
+        - Copy template block below last date.
+        - Write date once in A{start_row}.
+        - Fill V:X.
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
+    sheet_id = ws.id
 
     pivot = build_clinic_role_totals(final_schedule)
 
-    print("\nClinic totals from Deputy:")
-    print(pivot[["Clinic_Name", "PT", "Assistant", "PCC"]])
+    target_date = get_target_date()
+    sheet_date = format_sheet_date(target_date)
 
-    # Read only current block clinics: D2:D33 for 32 clinics
-    all_clinic_names = ws.get(f"D{FIRST_DATA_ROW}:D{LAST_DATA_ROW}")
+    existing_start_row = find_existing_date_start_row(ws, sheet_date)
+
+    if existing_start_row:
+        start_row = existing_start_row
+        end_row = start_row + DAILY_BLOCK_ROWS - 1
+        should_write_date = False
+
+        print(f"Date {sheet_date} exists in column A at row {start_row}.")
+        print(f"Filling existing block rows {start_row}:{end_row}.")
+    else:
+        start_row = get_next_daily_block_start_row_by_date(ws)
+        end_row = start_row + DAILY_BLOCK_ROWS - 1
+        should_write_date = True
+
+        print(f"Date {sheet_date} not found in column A.")
+        print(f"Appending new block rows {start_row}:{end_row}.")
+
+        source_start_index = FIRST_DATA_ROW - 1
+        source_end_index = LAST_DATA_ROW
+
+        destination_start_index = start_row - 1
+        destination_end_index = destination_start_index + DAILY_BLOCK_ROWS
+
+        spreadsheet.batch_update({
+            "requests": [
+                {
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": destination_start_index,
+                            "endIndex": destination_end_index
+                        },
+                        "inheritFromBefore": False
+                    }
+                },
+                {
+                    "copyPaste": {
+                        "source": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": source_start_index,
+                            "endRowIndex": source_end_index,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": TEMPLATE_END_COLUMN_INDEX
+                        },
+                        "destination": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": destination_start_index,
+                            "endRowIndex": destination_end_index,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": TEMPLATE_END_COLUMN_INDEX
+                        },
+                        "pasteType": "PASTE_NORMAL",
+                        "pasteOrientation": "NORMAL"
+                    }
+                }
+            ]
+        })
+
+        time.sleep(2)
+
+    # Read locations from the target block
+    all_clinic_names = ws.get(f"D{start_row}:D{end_row}")
     all_clinic_names = [row[0] if row else "" for row in all_clinic_names]
 
-    print(f"\nCurrent block clinics from D{FIRST_DATA_ROW}:D{LAST_DATA_ROW}:")
+    print(f"\nClinics from D{start_row}:D{end_row}:")
     print(all_clinic_names[:15])
 
-    target_date = get_target_date()
-    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-    sheet_date = f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
-
-    date_values = []
     output_values = []
     unmatched = []
 
@@ -413,11 +567,8 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
         clinic_key = clean_text(clinic_name)
 
         if clinic_key == "":
-            date_values.append([""])
             output_values.append(["", "", ""])
             continue
-
-        date_values.append([sheet_date])
 
         matched = pivot[pivot["Clinic_Key"] == clinic_key]
 
@@ -431,37 +582,34 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
                 float(matched["PCC"].iloc[0])
             ])
 
-    if not output_values:
-        print("No clinic rows found to update.")
-        return
+    # Write date only if it is a newly appended block
+    if should_write_date:
+        ws.update(
+            range_name=f"A{start_row}",
+            values=[[sheet_date]]
+        )
 
-    # Update date only in current block R2:R33
+    # Fill hours only in this date block
+    ws.batch_clear([f"{OUTPUT_START_COL}{start_row}:{OUTPUT_END_COL}{end_row}"])
+
     ws.update(
-        range_name=f"R{FIRST_DATA_ROW}:R{LAST_DATA_ROW}",
-        values=date_values
-    )
-
-    # Clear only current block numbers V2:X33
-    ws.batch_clear([f"V{FIRST_DATA_ROW}:X{LAST_DATA_ROW}"])
-
-    # Write only current block numbers V2:X33
-    ws.update(
-        range_name=f"V{FIRST_DATA_ROW}:X{LAST_DATA_ROW}",
+        range_name=f"{OUTPUT_START_COL}{start_row}:{OUTPUT_END_COL}{end_row}",
         values=output_values
     )
 
-    print(f"\nUpdated current block only:")
-    print(f"Date: R{FIRST_DATA_ROW}:R{LAST_DATA_ROW}")
-    print(f"Hours: V{FIRST_DATA_ROW}:X{LAST_DATA_ROW}")
+    print(f"\nReport {sheet_date} filled in rows {start_row}:{end_row}.")
+    print(f"Hours filled: {OUTPUT_START_COL}{start_row}:{OUTPUT_END_COL}{end_row}")
 
     if unmatched:
-        print("\nUnmatched clinics from current block column D:")
+        print("\nUnmatched clinics:")
         for clinic in unmatched:
             print("-", clinic)
 
         print("\nDeputy clinic names available:")
         for clinic in pivot["Clinic_Name"].tolist():
             print("-", clinic)
+
+
 # ================= MAIN REPORT =================
 
 def run_report():
@@ -504,12 +652,11 @@ def run_report():
 
     spreadsheet = open_google_sheet()
 
-    write_clinic_role_totals_to_schedule_sheet(
+    append_or_update_daily_report_by_date(
         spreadsheet=spreadsheet,
         final_schedule=final_schedule
     )
-
-    print("\nDone. Existing Sheet1 updated.")
+    print("\nDone. Sheet2 updated by date.")
 
 
 if __name__ == "__main__":

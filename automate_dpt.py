@@ -9,7 +9,7 @@ from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 import os
 from pathlib import Path
-import time 
+import time
 
 # ================= CONFIG =================
 BASE_DIR = Path(__file__).resolve().parent
@@ -435,29 +435,40 @@ def append_daily_report_below(spreadsheet, final_schedule):
     destination_end_index = destination_start_index + DAILY_BLOCK_ROWS
 
     spreadsheet.batch_update({
-        "requests": [
-            {
-                "copyPaste": {
-                    "source": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": source_start_index,
-                        "endRowIndex": source_end_index,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 9
-                    },
-                    "destination": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": destination_start_index,
-                        "endRowIndex": destination_end_index,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 9
-                    },
-                    "pasteType": "PASTE_NORMAL",
-                    "pasteOrientation": "NORMAL"
-                }
+    "requests": [
+        {
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": destination_start_index,
+                    "endIndex": destination_end_index
+                },
+                "inheritFromBefore": False
             }
-        ]
-    })
+        },
+        {
+            "copyPaste": {
+                "source": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": source_start_index,
+                    "endRowIndex": source_end_index,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 9
+                },
+                "destination": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": destination_start_index,
+                    "endRowIndex": destination_end_index,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 9
+                },
+                "pasteType": "PASTE_NORMAL",
+                "pasteOrientation": "NORMAL"
+            }
+        }
+    ]
+})
     time.sleep(2)
 
     # Read clinics from the new copied block

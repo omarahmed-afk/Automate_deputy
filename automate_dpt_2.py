@@ -3,17 +3,19 @@ import re
 import requests
 import pandas as pd
 import gspread
+import argparse
+import logging
+import sys
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 
+
+# ================= CONFIG =================
 from dotenv import load_dotenv
 import os
 from pathlib import Path
-
-
-# ================= CONFIG =================
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -23,17 +25,11 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 if not TOKEN:
     raise ValueError("DEPUTY_TOKEN is missing. Check your .env file.")
-
 if not SPREADSHEET_ID:
     raise ValueError("SPREADSHEET_ID is missing. Check your .env file.")
 
 TOKEN = TOKEN.strip().strip('"').strip("'")
 SPREADSHEET_ID = SPREADSHEET_ID.strip().strip('"').strip("'")
-
-NY = ZoneInfo("America/New_York")
-
-INSTALL_URL = "https://ptofthecity.na.deputy.com"
-API_BASE = f"{INSTALL_URL}/api/v1"
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
@@ -41,104 +37,96 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-# Google Sheets
-GOOGLE_CREDENTIALS_FILE = Path(
-    os.getenv("GOOGLE_CREDENTIALS_FILE", str(BASE_DIR / "service_account.json"))
-)
+NY = ZoneInfo("America/New_York")
+
+INSTALL_URL = "https://ptofthecity.na.deputy.com"
+API_BASE = f"{INSTALL_URL}/api/v1"
+
+GOOGLE_CREDENTIALS_FILE = BASE_DIR / "service_account.json"
 
 SHEET_NAME = "Sheet1"
 
-# Daily report layout
+# Column D = index 4 (1-based for gspread)
+CLINIC_COLUMN_NUMBER = 4
+
+# Data starts at row 2 (row 1 = headers)
+FIRST_DATA_ROW = 2
 DAILY_BLOCK_START_ROW = 2
 
-# Column indexes in Python are zero-based
-DATE_COL_INDEX = 0          # A
-PT_COL_INDEX = 21           # V
-ASSISTANT_COL_INDEX = 23    # X
-PCC_COL_INDEX = 24          # Y
-LOCATION_COL_INDEX = 29     # AD
+# Output columns (1-based letter reference):
+# V = PT Hours      → col index 22 → row list index 21
+# W = Assistant     → col index 23 → row list index 22
+# X = PCC           → col index 24 → row list index 23
+COL_PT        = 21   # V (0-based row index)
+COL_ASSISTANT = 22   # W
+COL_PCC       = 23   # X
+RANGE_OUTPUT  = "V"  # Start column letter for batch write
 
-TEMPLATE_LAST_COL = "AD"
-TEMPLATE_COL_COUNT = 30     # A:AD
+# ================= LOGGING =================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(BASE_DIR / "deputy_report.log"),
+    ],
+)
+log = logging.getLogger(__name__)
 
 
 # ================= DATE FUNCTIONS =================
 
-def get_target_date():
-    """
-    Use yesterday based on New York time.
-    Example: if today is 2026-06-28, target date = 2026-06-27.
-    """
+def get_target_date(override: str | None = None) -> str:
+    """Return ISO date string: override if provided, else yesterday NY time."""
+    if override:
+        # Validate format
+        datetime.strptime(override, "%Y-%m-%d")
+        return override
     yesterday = datetime.now(NY).date() - timedelta(days=1)
     return str(yesterday)
 
 
-def get_day_range_unix(target_date):
+def get_day_range_unix(target_date: str):
     start_dt = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=NY)
     end_dt = start_dt + timedelta(days=1)
-
     return int(start_dt.timestamp()), int(end_dt.timestamp())
-
-
-def format_sheet_date(target_date):
-    """
-    Convert 2026-06-27 to 6/27 for Google Sheet display.
-    """
-    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-    return f"{date_obj.month}/{date_obj.day}"
 
 
 # ================= DEPUTY API =================
 
-def deputy_query(resource_name, payload):
+def deputy_query(resource_name: str, payload: dict) -> pd.DataFrame:
     url = f"{API_BASE}/resource/{resource_name}/QUERY"
-
-    response = requests.post(
-        url,
-        headers=HEADERS,
-        json=payload,
-        timeout=60
-    )
-
-    print(resource_name, "status:", response.status_code)
-
+    response = requests.post(url, headers=HEADERS, json=payload, timeout=60)
+    log.info(f"{resource_name} status: {response.status_code}")
     if response.status_code != 200:
-        print(response.text[:1000])
+        log.error(response.text[:1000])
         response.raise_for_status()
-
-    data = response.json()
-    return pd.json_normalize(data)
+    return pd.json_normalize(response.json())
 
 
 # ================= CLEANING FUNCTIONS =================
 
-def clean_text(value):
+def clean_text(value) -> str:
     if pd.isna(value):
         return ""
-
     text = str(value).strip().lower()
     text = text.replace("\u00a0", " ")
     text = re.sub(r"\s+", " ", text)
-
     return text
 
 
-def map_role(role):
+def map_role(role: str) -> str:
     role_clean = clean_text(role)
-
     if role_clean == "":
         return "Other"
-
     if "physical therapist" in role_clean or "physical threapist" in role_clean:
         return "PT"
-
     if (
         "physical therapy assistant" in role_clean
         or role_clean == "pta"
         or "aide" in role_clean
     ):
         return "Assistant"
-
     if (
         "patient care coordinator" in role_clean
         or "patients care coordinator" in role_clean
@@ -146,71 +134,44 @@ def map_role(role):
         or "(pcc)" in role_clean
     ):
         return "PCC"
-
     return "Other"
 
 
-def clean_time(value):
-    if value is None:
+def clean_time(value) -> str:
+    if value is None or value != value:
         return ""
-
-    if value != value:
-        return ""
-
     s = str(value).strip()
-
     if s == "" or s.lower() == "nan":
         return ""
-
     if "T" in s:
         time_part = s.split("T")[1][:5]
     elif " " in s:
-        parts = s.split()
-        time_part = parts[1][:5]
+        time_part = s.split()[1][:5]
     else:
         time_part = s[:5]
-
     hour, minute = time_part.split(":")
-    hour = int(hour)
-    minute = int(minute)
-
+    hour, minute = int(hour), int(minute)
     am_pm = "am" if hour < 12 else "pm"
-
-    hour_12 = hour % 12
-    if hour_12 == 0:
-        hour_12 = 12
-
-    if minute == 0:
-        return f"{hour_12}{am_pm}"
-
-    return f"{hour_12}:{minute:02d}{am_pm}"
+    hour_12 = hour % 12 or 12
+    return f"{hour_12}{am_pm}" if minute == 0 else f"{hour_12}:{minute:02d}{am_pm}"
 
 
 # ================= BUILD DATAFRAME =================
 
-def build_schedule_df(roster_df):
-    needed_api_columns = [
-        "Id",
-        "Date",
-        "StartTime",
-        "EndTime",
-        "StartTimeLocalized",
-        "EndTimeLocalized",
-        "TotalTime",
+def build_schedule_df(roster_df: pd.DataFrame) -> pd.DataFrame:
+    needed = [
+        "Id", "Date", "StartTime", "EndTime",
+        "StartTimeLocalized", "EndTimeLocalized", "TotalTime",
         "_DPMetaData.EmployeeInfo.DisplayName",
         "_DPMetaData.OperationalUnitInfo.OperationalUnitName",
         "_DPMetaData.OperationalUnitInfo.CompanyName",
-        "MatchedByTimesheet"
+        "MatchedByTimesheet",
     ]
+    missing = [c for c in needed if c not in roster_df.columns]
+    if missing:
+        raise ValueError(f"Missing columns from Deputy response: {missing}")
 
-    missing_cols = [col for col in needed_api_columns if col not in roster_df.columns]
-
-    if missing_cols:
-        raise ValueError(f"Missing columns from Deputy response: {missing_cols}")
-
-    schedule_df = roster_df[needed_api_columns].copy()
-
-    schedule_df = schedule_df.rename(columns={
+    df = roster_df[needed].copy().rename(columns={
         "Id": "Roster_Id",
         "StartTime": "Start_Unix",
         "EndTime": "End_Unix",
@@ -220,73 +181,39 @@ def build_schedule_df(roster_df):
         "_DPMetaData.EmployeeInfo.DisplayName": "Employee_Name",
         "_DPMetaData.OperationalUnitInfo.OperationalUnitName": "Role_Name",
         "_DPMetaData.OperationalUnitInfo.CompanyName": "Clinic_Name",
-        "MatchedByTimesheet": "Timesheet_Id"
+        "MatchedByTimesheet": "Timesheet_Id",
     })
 
-    schedule_df["Employee_Name"] = (
-        schedule_df["Employee_Name"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
-    schedule_df = schedule_df[
-        (schedule_df["Employee_Name"] != "") &
-        (schedule_df["Employee_Name"].str.upper() != "EMPTY") &
-        (schedule_df["Employee_Name"].str.lower() != "nan")
+    df["Employee_Name"] = df["Employee_Name"].fillna("").astype(str).str.strip()
+    df = df[
+        (df["Employee_Name"] != "") &
+        (df["Employee_Name"].str.upper() != "EMPTY") &
+        (df["Employee_Name"].str.lower() != "nan")
     ].copy()
 
-    schedule_df["Role_Mapped"] = schedule_df["Role_Name"].apply(map_role)
+    df["Role_Mapped"] = df["Role_Name"].apply(map_role)
+    df["Start_Clean"] = df["Scheduled_Start"].apply(clean_time)
+    df["End_Clean"] = df["Scheduled_End"].apply(clean_time)
+    df["Shift_Time"] = df["Start_Clean"] + " – " + df["End_Clean"]
 
-    schedule_df["Start_Clean"] = schedule_df["Scheduled_Start"].apply(clean_time)
-    schedule_df["End_Clean"] = schedule_df["Scheduled_End"].apply(clean_time)
-
-    schedule_df["Shift_Time"] = (
-        schedule_df["Start_Clean"] + " – " + schedule_df["End_Clean"]
+    df["Start_DT_NY"] = (
+        pd.to_datetime(df["Start_Unix"], unit="s", utc=True).dt.tz_convert(NY)
     )
-
-    schedule_df["Start_DT_NY"] = (
-        pd.to_datetime(schedule_df["Start_Unix"], unit="s", utc=True)
-        .dt.tz_convert(NY)
+    df["End_DT_NY"] = (
+        pd.to_datetime(df["End_Unix"], unit="s", utc=True).dt.tz_convert(NY)
     )
+    df["Date_Clean"] = df["Start_DT_NY"].dt.strftime("%Y-%m-%d")
 
-    schedule_df["End_DT_NY"] = (
-        pd.to_datetime(schedule_df["End_Unix"], unit="s", utc=True)
-        .dt.tz_convert(NY)
-    )
+    df["Total_Hours"] = (
+        (pd.to_numeric(df["End_Unix"], errors="coerce") -
+         pd.to_numeric(df["Start_Unix"], errors="coerce")) / 3600
+    ).fillna(0).round(2)
 
-    schedule_df["Date_Clean"] = schedule_df["Start_DT_NY"].dt.strftime("%Y-%m-%d")
-
-    schedule_df["Total_Hours"] = (
-        pd.to_numeric(schedule_df["End_Unix"], errors="coerce") -
-        pd.to_numeric(schedule_df["Start_Unix"], errors="coerce")
-    ) / 3600
-
-    schedule_df["Total_Hours"] = (
-        schedule_df["Total_Hours"]
-        .fillna(0)
-        .round(2)
-    )
-
-    final_schedule = schedule_df[
-        [
-            "Date_Clean",
-            "Clinic_Name",
-            "Role_Name",
-            "Role_Mapped",
-            "Employee_Name",
-            "Shift_Time",
-            "Total_Hours",
-            "Roster_Id",
-            "Timesheet_Id"
-        ]
-    ].copy()
-
-    final_schedule = final_schedule.rename(columns={
-        "Date_Clean": "Date"
-    })
-
-    return final_schedule
+    return df[[
+        "Date_Clean", "Clinic_Name", "Role_Name", "Role_Mapped",
+        "Employee_Name", "Shift_Time", "Total_Hours",
+        "Roster_Id", "Timesheet_Id",
+    ]].rename(columns={"Date_Clean": "Date"})
 
 
 # ================= GOOGLE SHEETS =================
@@ -294,110 +221,78 @@ def build_schedule_df(roster_df):
 def open_google_sheet():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
+        "https://www.googleapis.com/auth/drive",
     ]
-
     google_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-
     if google_json:
-        service_account_info = json.loads(google_json)
-        creds = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=scopes
-        )
+        info = json.loads(google_json)
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
     else:
-        with open(GOOGLE_CREDENTIALS_FILE, "r") as f:
-            service_account_info = json.load(f)
-
+        with open(GOOGLE_CREDENTIALS_FILE) as f:
+            info = json.load(f)
         creds = Credentials.from_service_account_file(
-            GOOGLE_CREDENTIALS_FILE,
-            scopes=scopes
+            str(GOOGLE_CREDENTIALS_FILE), scopes=scopes
         )
 
-    print("Service account email:")
-    print(service_account_info["client_email"])
-
+    log.info(f"Service account: {info['client_email']}")
     gc = gspread.authorize(creds)
-
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
-
-    print("\nSpreadsheet title:", spreadsheet.title)
-    print("Available worksheets:")
-    for ws in spreadsheet.worksheets():
-        print("-", ws.title)
-
+    log.info(f"Spreadsheet: {spreadsheet.title}")
     return spreadsheet
 
 
-def build_clinic_role_totals(final_schedule):
+# ================= PIVOT HELPERS =================
+
+def build_clinic_role_totals(final_schedule: pd.DataFrame) -> pd.DataFrame:
     df = final_schedule.copy()
-
-    df["Total_Hours"] = pd.to_numeric(
-        df["Total_Hours"],
-        errors="coerce"
-    ).fillna(0)
-
-    clinic_totals = (
-        df.groupby(["Clinic_Name", "Role_Mapped"], as_index=False)["Total_Hours"]
-        .sum()
-    )
+    df["Total_Hours"] = pd.to_numeric(df["Total_Hours"], errors="coerce").fillna(0)
 
     pivot = (
-        clinic_totals
+        df.groupby(["Clinic_Name", "Role_Mapped"])["Total_Hours"]
+        .sum()
+        .reset_index()
         .pivot_table(
             index="Clinic_Name",
             columns="Role_Mapped",
             values="Total_Hours",
             fill_value=0,
-            aggfunc="sum"
+            aggfunc="sum",
         )
         .reset_index()
     )
-
     pivot.columns.name = None
 
     for col in ["PT", "Assistant", "PCC"]:
         if col not in pivot.columns:
-            pivot[col] = 0
+            pivot[col] = 0.0
 
-    pivot["PT"] = pd.to_numeric(
-        pivot["PT"],
-        errors="coerce"
-    ).fillna(0).round(2)
-
-    pivot["Assistant"] = pd.to_numeric(
-        pivot["Assistant"],
-        errors="coerce"
-    ).fillna(0).round(2)
-
-    pivot["PCC"] = pd.to_numeric(
-        pivot["PCC"],
-        errors="coerce"
-    ).fillna(0).round(2)
-
+    pivot["PT"]        = pd.to_numeric(pivot["PT"],        errors="coerce").fillna(0).round(2)
+    pivot["Assistant"] = pd.to_numeric(pivot["Assistant"], errors="coerce").fillna(0).round(2)
+    pivot["PCC"]       = pd.to_numeric(pivot["PCC"],       errors="coerce").fillna(0).round(2)
     pivot["Clinic_Key"] = pivot["Clinic_Name"].apply(clean_text)
 
     return pivot[["Clinic_Name", "Clinic_Key", "PT", "Assistant", "PCC"]]
 
 
-# ================= DAILY INSERT LOGIC =================
+def _match_hours(pivot: pd.DataFrame, clinic_key: str):
+    """Return (PT, Assistant, PCC) floats for a clinic key, or (0,0,0) if unmatched."""
+    matched = pivot[pivot["Clinic_Key"] == clinic_key]
+    if matched.empty:
+        return 0.0, 0.0, 0.0
+    row = matched.iloc[0]
+    return float(row["PT"]), float(row["Assistant"]), float(row["PCC"])
 
-def get_current_top_block_row_count(ws):
+
+# ================= DAILY BLOCK DETECTION =================
+
+def get_current_top_block_row_count(ws) -> int:
     """
-    Count rows in the current top daily block dynamically.
-
-    Expected layout:
-    A  = Date
-    AD = Location
-
-    It stops when:
-    - the date in column A changes, or
-    - it reaches an empty area after data.
+    Count how many rows the current top daily block occupies.
+    Stops when the date in column A changes or a blank A+D row is hit
+    after at least one real row.
     """
-
     start_row = DAILY_BLOCK_START_ROW
-    rows = ws.get(f"A{start_row}:{TEMPLATE_LAST_COL}1000")
-
+    rows = ws.get(f"A{start_row}:D1000")
     if not rows:
         raise ValueError("No rows found in the report sheet.")
 
@@ -405,25 +300,24 @@ def get_current_top_block_row_count(ws):
     count = 0
 
     for row in rows:
-        row = row + [""] * (TEMPLATE_COL_COUNT - len(row))
+        row = row + [""] * (4 - len(row))
+        date_val = str(row[0]).strip()   # A = Date
+        loc_val  = str(row[3]).strip()   # D = Location
 
-        date_value = str(row[DATE_COL_INDEX]).strip()
-        location_value = str(row[LOCATION_COL_INDEX]).strip()
-
-        # Skip empty rows before the first data row
-        if not date_value and not location_value and count == 0:
+        # Skip leading blank rows
+        if not date_val and not loc_val and count == 0:
             continue
 
-        # Detect the first date of the top block
-        if first_date is None and date_value:
-            first_date = date_value
+        # Capture the first date we see
+        if first_date is None and date_val:
+            first_date = date_val
 
-        # Stop when the next date block starts
-        if first_date and date_value and date_value != first_date:
+        # New date → new block begins, stop here
+        if first_date and date_val and date_val != first_date:
             break
 
-        # Stop when empty area starts after data
-        if not date_value and not location_value and count > 0:
+        # Blank row after content → block ended
+        if not date_val and not loc_val and count > 0:
             break
 
         count += 1
@@ -431,142 +325,170 @@ def get_current_top_block_row_count(ws):
     if count == 0:
         raise ValueError(
             "Could not detect daily block rows. "
-            "Check Date in column A and Location in column AD."
+            "Ensure Date is in column A and Location in column D."
         )
-
     return count
 
 
-def insert_daily_report_on_top(spreadsheet, final_schedule):
-    """
-    Insert a new daily report block at the top.
-    Old daily reports move down automatically.
+# ================= MAIN WRITE FUNCTION =================
 
-    Expected layout:
-    A  = Date
-    AD = Location
-    V  = PT Hours
-    X  = Assistant Hours
-    Y  = PCC Hours
+def insert_daily_report_on_top(spreadsheet, final_schedule: pd.DataFrame, target_date: str):
+    """
+    Insert new daily block on top while preserving sheet design/format.
+    
+    Layout:
+    A = Date
+    D = Location
+    V = PT Hours
+    W = Assistant Hours
+    X = PCC Hours
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
-
-    target_date = get_target_date()
-    sheet_date_text = format_sheet_date(target_date)
-
     pivot = build_clinic_role_totals(final_schedule)
 
-    print("\nClinic totals from Deputy:")
-    print(pivot[["Clinic_Name", "PT", "Assistant", "PCC"]])
-
     start_row = DAILY_BLOCK_START_ROW
-    daily_block_rows = get_current_top_block_row_count(ws)
-    end_row = start_row + daily_block_rows - 1
+    block_rows = get_current_top_block_row_count(ws)
+    end_row = start_row + block_rows - 1
 
-    print(f"\nDetected daily block rows: {daily_block_rows}")
+    log.info(f"Detected top block: rows {start_row}-{end_row} ({block_rows} rows)")
 
-    template_rows = ws.get(f"A{start_row}:{TEMPLATE_LAST_COL}{end_row}")
+    # Read current top block as template
+    template = ws.get(f"A{start_row}:X{end_row}")
 
-    new_rows = []
+    sheet_id = ws.id
+
+    start_index = start_row - 1
+    end_index = start_index + block_rows
+
+    # 1) Insert blank rows above current top block
+    # 2) Copy old top block formatting/design into new rows
+    spreadsheet.batch_update({
+        "requests": [
+            {
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": start_index,
+                        "endIndex": end_index
+                    },
+                    "inheritFromBefore": False
+                }
+            },
+            {
+                "copyPaste": {
+                    "source": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": end_index,
+                        "endRowIndex": end_index + block_rows,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 24
+                    },
+                    "destination": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": start_index,
+                        "endRowIndex": end_index,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 24
+                    },
+                    "pasteType": "PASTE_NORMAL",
+                    "pasteOrientation": "NORMAL"
+                }
+            }
+        ]
+    })
+
+    date_values = []
+    output_values = []
     unmatched = []
 
-    for row in template_rows:
-        row = row + [""] * (TEMPLATE_COL_COUNT - len(row))
+    for row in template:
+        row = list(row) + [""] * (24 - len(row))
 
-        location_name = row[LOCATION_COL_INDEX]
+        location_name = str(row[3]).strip()  # D = Location
         location_key = clean_text(location_name)
 
         if location_key:
-            row[DATE_COL_INDEX] = sheet_date_text
+            date_values.append([target_date])
         else:
-            row[DATE_COL_INDEX] = ""
+            date_values.append([""])
 
-        matched = pivot[pivot["Clinic_Key"] == location_key]
+        pt, assistant, pcc = _match_hours(pivot, location_key)
 
-        if location_key == "":
-            row[PT_COL_INDEX] = ""
-            row[ASSISTANT_COL_INDEX] = ""
-            row[PCC_COL_INDEX] = ""
-        elif matched.empty:
-            row[PT_COL_INDEX] = 0
-            row[ASSISTANT_COL_INDEX] = 0
-            row[PCC_COL_INDEX] = 0
+        if location_key and pt == 0 and assistant == 0 and pcc == 0:
             unmatched.append(location_name)
+
+        if location_key:
+            output_values.append([pt, assistant, pcc])
         else:
-            row[PT_COL_INDEX] = float(matched["PT"].iloc[0])
-            row[ASSISTANT_COL_INDEX] = float(matched["Assistant"].iloc[0])
-            row[PCC_COL_INDEX] = float(matched["PCC"].iloc[0])
+            output_values.append(["", "", ""])
 
-        new_rows.append(row[:TEMPLATE_COL_COUNT])
+    new_end_row = start_row + block_rows - 1
 
-    ws.insert_rows(
-        new_rows,
-        row=start_row,
-        value_input_option="USER_ENTERED"
+    # Update only Date and Hours in the newly inserted block
+    ws.update(
+        range_name=f"A{start_row}:A{new_end_row}",
+        values=date_values
     )
 
-    print(f"\nInserted new daily report for {sheet_date_text} at row {start_row}.")
+    ws.update(
+        range_name=f"V{start_row}:X{new_end_row}",
+        values=output_values
+    )
+
+    log.info(f"Inserted new daily report for {target_date} at row {start_row}.")
 
     if unmatched:
-        print("\nUnmatched locations from Sheet:")
-        for clinic in unmatched:
-            print("-", clinic)
+        log.warning("Clinics in Sheet1 with no Deputy data today:")
+        for c in unmatched:
+            log.warning(f"  - {c}")
+            
+# ================= MAIN =================
 
-        print("\nDeputy clinic names available:")
-        for clinic in pivot["Clinic_Name"].tolist():
-            print("-", clinic)
-
-
-# ================= MAIN REPORT =================
-
-def run_report():
-    target_date = get_target_date()
-
-    print("Running report for:", target_date)
+def run_report(date_override: str | None = None):
+    target_date = get_target_date(date_override)
+    log.info(f"Running report for: {target_date}")
 
     start_unix, end_unix = get_day_range_unix(target_date)
 
-    roster_payload = {
+    roster_df = deputy_query("Roster", {
         "search": {
-            "s1": {
-                "field": "StartTime",
-                "data": start_unix,
-                "type": "ge"
-            },
-            "s2": {
-                "field": "StartTime",
-                "data": end_unix,
-                "type": "lt"
-            }
+            "s1": {"field": "StartTime", "data": start_unix, "type": "ge"},
+            "s2": {"field": "StartTime", "data": end_unix,   "type": "lt"},
         }
-    }
-
-    roster_df = deputy_query("Roster", roster_payload)
+    })
 
     if roster_df.empty:
-        print("No roster data found.")
+        log.warning("No roster data found for this date.")
         return
 
     final_schedule = build_schedule_df(roster_df)
 
-    print("\nRole check:")
-    print(
+    log.info("\nRole summary:")
+    log.info(
         final_schedule
-        .groupby(["Role_Name", "Role_Mapped"], as_index=False)["Total_Hours"]
+        .groupby(["Role_Name", "Role_Mapped"])["Total_Hours"]
         .sum()
+        .reset_index()
         .sort_values(["Role_Mapped", "Role_Name"])
+        .to_string(index=False)
     )
 
     spreadsheet = open_google_sheet()
-
-    insert_daily_report_on_top(
-        spreadsheet=spreadsheet,
-        final_schedule=final_schedule
-    )
-
-    print("\nDone. New daily report inserted on top.")
+    insert_daily_report_on_top(spreadsheet, final_schedule, target_date)
+    log.info("Done.")
 
 
 if __name__ == "__main__":
-    run_report()
+    parser = argparse.ArgumentParser(
+        description="Pull Deputy roster and write to Google Sheets."
+    )
+    parser.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="Target date (default: yesterday in NY time)",
+    )
+    args = parser.parse_args()
+    run_report(date_override=args.date)

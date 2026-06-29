@@ -52,7 +52,7 @@ SHEET_NAME = "Sheet1"
 # Clinic name column in Sheet1
 # AD = 4
 CLINIC_COLUMN_NUMBER = 30
-
+DATE_COLUMN_NUMBER = 1
 # Headers are in row 2, clinic data starts row 3
 FIRST_DATA_ROW = 2
 DAILY_BLOCK_ROWS = 32

@@ -73,8 +73,7 @@ MERGED_DATE_CELL = "A2"
 # ================= DATE FUNCTIONS =================
 
 def get_target_date():
-    tomorrow = datetime.now(NY).date() + timedelta(days=1)
-    return str(tomorrow)
+    return "2026-06-29"
 
 
 def get_day_range_unix(target_date):
@@ -377,39 +376,65 @@ def build_clinic_role_totals(final_schedule):
 
     return pivot[["Clinic_Name", "Clinic_Key", "PT", "Assistant", "PCC"]]
 
-def archive_current_block_below(spreadsheet):
+def get_next_daily_block_start_row(ws):
     """
-    Copy current top daily block and place it directly below.
-    This keeps old date/report under the new one.
-
-    Current block:
-    Rows 2:33
-    Columns A:I
+    Find next empty block start row based on column D locations.
+    If first block is rows 2:33, next will be 34.
+    Then 66, 98, etc.
     """
 
-    ws = spreadsheet.worksheet(SHEET_NAME) 
-    
+    clinic_values = ws.col_values(CLINIC_COLUMN_NUMBER)
+
+    last_used_row = len(clinic_values)
+
+    if last_used_row < FIRST_DATA_ROW:
+        return FIRST_DATA_ROW
+
+    used_data_rows = last_used_row - FIRST_DATA_ROW + 1
+    existing_blocks = (used_data_rows + DAILY_BLOCK_ROWS - 1) // DAILY_BLOCK_ROWS
+
+    next_start_row = FIRST_DATA_ROW + (existing_blocks * DAILY_BLOCK_ROWS)
+
+    return next_start_row
+
+
+def append_daily_report_below(spreadsheet, final_schedule):
+    """
+    Append new daily report below existing reports.
+
+    Example:
+    Rows 2:33   = 28
+    Rows 34:65  = 29
+    Rows 66:97  = 30
+
+    Template is copied from the first block rows 2:33.
+    Date merged cell is updated only at the top-left cell of the new block.
+    """
+
+    ws = spreadsheet.worksheet(SHEET_NAME)
     sheet_id = ws.id
 
-    source_start_index = FIRST_DATA_ROW - 1          # row 2 -> index 1
-    source_end_index = LAST_DATA_ROW                 # row 33 -> index 33 exclusive
+    pivot = build_clinic_role_totals(final_schedule)
 
-    archive_start_index = LAST_DATA_ROW              # insert at row 34
-    archive_end_index = archive_start_index + DAILY_BLOCK_ROWS
+    target_date = get_target_date()
+    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    sheet_date = f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
+
+    start_row = get_next_daily_block_start_row(ws)
+    end_row = start_row + DAILY_BLOCK_ROWS - 1
+
+    print(f"Appending new daily block to rows {start_row}:{end_row}")
+    print(f"Report date: {sheet_date}")
+
+    # Copy template from first block rows 2:33 into the new block
+    source_start_index = FIRST_DATA_ROW - 1
+    source_end_index = LAST_DATA_ROW
+
+    destination_start_index = start_row - 1
+    destination_end_index = destination_start_index + DAILY_BLOCK_ROWS
 
     spreadsheet.batch_update({
         "requests": [
-            {
-                "insertDimension": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "dimension": "ROWS",
-                        "startIndex": archive_start_index,
-                        "endIndex": archive_end_index
-                    },
-                    "inheritFromBefore": False
-                }
-            },
             {
                 "copyPaste": {
                     "source": {
@@ -417,14 +442,14 @@ def archive_current_block_below(spreadsheet):
                         "startRowIndex": source_start_index,
                         "endRowIndex": source_end_index,
                         "startColumnIndex": 0,
-                        "endColumnIndex": 9   # A:I
+                        "endColumnIndex": 9
                     },
                     "destination": {
                         "sheetId": sheet_id,
-                        "startRowIndex": archive_start_index,
-                        "endRowIndex": archive_end_index,
+                        "startRowIndex": destination_start_index,
+                        "endRowIndex": destination_end_index,
                         "startColumnIndex": 0,
-                        "endColumnIndex": 9   # A:I
+                        "endColumnIndex": 9
                     },
                     "pasteType": "PASTE_NORMAL",
                     "pasteOrientation": "NORMAL"
@@ -433,7 +458,53 @@ def archive_current_block_below(spreadsheet):
         ]
     })
 
-    print(f"Archived current block under row {LAST_DATA_ROW}.")
+    # Read clinics from the new copied block
+    all_clinic_names = ws.get(f"D{start_row}:D{end_row}")
+    all_clinic_names = [row[0] if row else "" for row in all_clinic_names]
+
+    output_values = []
+    unmatched = []
+
+    for clinic_name in all_clinic_names:
+        clinic_key = clean_text(clinic_name)
+
+        if clinic_key == "":
+            output_values.append(["", "", ""])
+            continue
+
+        matched = pivot[pivot["Clinic_Key"] == clinic_key]
+
+        if matched.empty:
+            output_values.append([0, 0, 0])
+            unmatched.append(clinic_name)
+        else:
+            output_values.append([
+                float(matched["PT"].iloc[0]),
+                float(matched["Assistant"].iloc[0]),
+                float(matched["PCC"].iloc[0])
+            ])
+
+    # Date is merged in column A. Update only top-left cell of the new merged block.
+    ws.update(
+        range_name=f"A{start_row}",
+        values=[[sheet_date]]
+    )
+
+    # Update hours in the new block only
+    ws.batch_clear([f"G{start_row}:I{end_row}"])
+
+    ws.update(
+        range_name=f"G{start_row}:I{end_row}",
+        values=output_values
+    )
+
+    print(f"Appended report {sheet_date} to rows {start_row}:{end_row}")
+    print(f"Hours updated: G{start_row}:I{end_row}")
+
+    if unmatched:
+        print("\nUnmatched clinics:")
+        for clinic in unmatched:
+            print("-", clinic)
 
 def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
@@ -451,7 +522,7 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
-    archive_current_block_below(spreadsheet)
+   # archive_current_block_below(spreadsheet)
 
     pivot = build_clinic_role_totals(final_schedule)
 
@@ -563,7 +634,7 @@ def run_report():
 
     spreadsheet = open_google_sheet()
 
-    write_clinic_role_totals_to_schedule_sheet(
+    append_daily_report_below(
         spreadsheet=spreadsheet,
         final_schedule=final_schedule
     )

@@ -55,7 +55,8 @@ CLINIC_COLUMN_NUMBER = 30
 
 # Headers are in row 2, clinic data starts row 3
 FIRST_DATA_ROW = 2
-
+DAILY_BLOCK_ROWS = 32
+LAST_DATA_ROW = FIRST_DATA_ROW + DAILY_BLOCK_ROWS - 1
 
 # ================= DATE FUNCTIONS =================
 def get_target_date():
@@ -373,16 +374,17 @@ def build_clinic_role_totals(final_schedule):
 
 def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
-    Writes totals into existing Sheet1.
+    Safe update mode.
 
-    Column D = clinic names
-
+    Reads only current block clinics from column D.
+    Updates only current block:
+    R = Date
     V = PT Hours
-    W = Assistant / PTA Hours
+    W = Assistant Hours
     X = PCC Hours
 
-    It does NOT write headers.
-    It writes numbers only under existing headers.
+    It does NOT insert rows.
+    It does NOT update old dates below.
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
@@ -392,22 +394,30 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     print("\nClinic totals from Deputy:")
     print(pivot[["Clinic_Name", "PT", "Assistant", "PCC"]])
 
-    # Read clinic names from column D
-    all_clinic_names = ws.col_values(CLINIC_COLUMN_NUMBER)
+    # Read only current block clinics: D2:D33 for 32 clinics
+    all_clinic_names = ws.get(f"D{FIRST_DATA_ROW}:D{LAST_DATA_ROW}")
+    all_clinic_names = [row[0] if row else "" for row in all_clinic_names]
 
-    print(f"\nFirst 15 values from Sheet1 column {CLINIC_COLUMN_NUMBER}:")
+    print(f"\nCurrent block clinics from D{FIRST_DATA_ROW}:D{LAST_DATA_ROW}:")
     print(all_clinic_names[:15])
 
+    target_date = get_target_date()
+    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    sheet_date = f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
+
+    date_values = []
     output_values = []
     unmatched = []
 
-    for row_number in range(FIRST_DATA_ROW, len(all_clinic_names) + 1):
-        clinic_name = all_clinic_names[row_number - 1]
+    for clinic_name in all_clinic_names:
         clinic_key = clean_text(clinic_name)
 
         if clinic_key == "":
+            date_values.append([""])
             output_values.append(["", "", ""])
             continue
+
+        date_values.append([sheet_date])
 
         matched = pivot[pivot["Clinic_Key"] == clinic_key]
 
@@ -425,21 +435,27 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
         print("No clinic rows found to update.")
         return
 
-    last_row = FIRST_DATA_ROW + len(output_values) - 1
-
-    # Clear only old numbers in AF:AH
-    ws.batch_clear([f"V{FIRST_DATA_ROW}:X{last_row}"])
-
-    # Write numbers only into AF:AH
+    # Update date only in current block R2:R33
     ws.update(
-        range_name=f"V{FIRST_DATA_ROW}:X{last_row}",
+        range_name=f"R{FIRST_DATA_ROW}:R{LAST_DATA_ROW}",
+        values=date_values
+    )
+
+    # Clear only current block numbers V2:X33
+    ws.batch_clear([f"V{FIRST_DATA_ROW}:X{LAST_DATA_ROW}"])
+
+    # Write only current block numbers V2:X33
+    ws.update(
+        range_name=f"V{FIRST_DATA_ROW}:X{LAST_DATA_ROW}",
         values=output_values
     )
 
-    print(f"\nUpdated {SHEET_NAME} V{FIRST_DATA_ROW}:X{last_row}.")
+    print(f"\nUpdated current block only:")
+    print(f"Date: R{FIRST_DATA_ROW}:R{LAST_DATA_ROW}")
+    print(f"Hours: V{FIRST_DATA_ROW}:X{LAST_DATA_ROW}")
 
     if unmatched:
-        print("\nUnmatched clinics from Sheet1 column D:")
+        print("\nUnmatched clinics from current block column D:")
         for clinic in unmatched:
             print("-", clinic)
 

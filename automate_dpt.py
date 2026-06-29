@@ -61,9 +61,13 @@ SHEET_NAME = "Sheet1"
 # Clinic name column in Sheet1
 # D = 4
 CLINIC_COLUMN_NUMBER = 4
+FIRST_DATA_ROW = 2
+DAILY_BLOCK_ROWS = 32
+LAST_DATA_ROW = FIRST_DATA_ROW + DAILY_BLOCK_ROWS - 1
+MERGED_DATE_CELL = "A2"
 
 # Headers are in row 2, clinic data starts row 3
-FIRST_DATA_ROW = 2
+
 
 
 # ================= DATE FUNCTIONS =================
@@ -376,15 +380,17 @@ def build_clinic_role_totals(final_schedule):
 
 def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
-    Writes totals into existing Sheet1.
+    Safe update for merged-column sheet.
 
-    Column D = clinic names
-    Column G = PT Hours
-    Column H = Assistant Hours
-    Column I = PCC Hours
+    Reads current block clinics from D2:D33.
+    Updates one merged date cell only.
+    Updates current block numbers only:
+    G = PT Hours
+    H = Assistant Hours
+    I = PCC Hours
 
-    It does NOT write headers.
-    It writes numbers only from row 3.
+    It does NOT insert rows.
+    It does NOT touch old blocks below.
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
@@ -394,17 +400,21 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     print("\nClinic totals from Deputy:")
     print(pivot[["Clinic_Name", "PT", "Assistant", "PCC"]])
 
-    # Read clinic names from column D
-    all_clinic_names = ws.col_values(CLINIC_COLUMN_NUMBER)
+    # Read only current block clinics
+    all_clinic_names = ws.get(f"D{FIRST_DATA_ROW}:D{LAST_DATA_ROW}")
+    all_clinic_names = [row[0] if row else "" for row in all_clinic_names]
 
-    print(f"\nFirst 15 values from Sheet1 column {CLINIC_COLUMN_NUMBER}:")
+    print(f"\nCurrent block clinics from D{FIRST_DATA_ROW}:D{LAST_DATA_ROW}:")
     print(all_clinic_names[:15])
+
+    target_date = get_target_date()
+    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    sheet_date = f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
 
     output_values = []
     unmatched = []
 
-    for row_number in range(FIRST_DATA_ROW, len(all_clinic_names) + 1):
-        clinic_name = all_clinic_names[row_number - 1]
+    for clinic_name in all_clinic_names:
         clinic_key = clean_text(clinic_name)
 
         if clinic_key == "":
@@ -427,29 +437,32 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
         print("No clinic rows found to update.")
         return
 
-    last_row = FIRST_DATA_ROW + len(output_values) - 1
-
-    # Clear only old numbers, not headers
-    ws.batch_clear([f"G{FIRST_DATA_ROW}:I{last_row}"])
-
-    # Write numbers only
+    # Update merged date cell only
     ws.update(
-        range_name=f"G{FIRST_DATA_ROW}:I{last_row}",
+        range_name=MERGED_DATE_CELL,
+        values=[[sheet_date]]
+    )
+
+    # Clear/update only current block numbers
+    ws.batch_clear([f"G{FIRST_DATA_ROW}:I{LAST_DATA_ROW}"])
+
+    ws.update(
+        range_name=f"G{FIRST_DATA_ROW}:I{LAST_DATA_ROW}",
         values=output_values
     )
 
-    print(f"\nUpdated {SHEET_NAME} G{FIRST_DATA_ROW}:I{last_row}.")
+    print("\nUpdated current block only:")
+    print(f"Date cell: {MERGED_DATE_CELL}")
+    print(f"Hours: G{FIRST_DATA_ROW}:I{LAST_DATA_ROW}")
 
     if unmatched:
-        print("\nUnmatched clinics from Sheet1 column D:")
+        print("\nUnmatched clinics from current block column D:")
         for clinic in unmatched:
             print("-", clinic)
 
         print("\nDeputy clinic names available:")
         for clinic in pivot["Clinic_Name"].tolist():
             print("-", clinic)
-
-
 # ================= MAIN REPORT =================
 
 def run_report():

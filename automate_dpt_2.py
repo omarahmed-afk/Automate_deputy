@@ -55,7 +55,7 @@ CLINIC_COLUMN_NUMBER = 30
 
 # Headers are in row 2, clinic data starts row 3
 FIRST_DATA_ROW = 2
-
+DAILY_BLOCK_START_ROW = 2
 
 # ================= DATE FUNCTIONS =================
 def get_target_date():
@@ -447,6 +447,113 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
         for clinic in pivot["Clinic_Name"].tolist():
             print("-", clinic)
 # ================= MAIN REPORT =================
+def get_current_top_block_row_count(ws):
+    """
+    Count rows in the current top daily block dynamically.
+
+    Requirement:
+    A = Date
+    D = Location
+
+    It stops when the date in column A changes.
+    """
+
+    start_row = DAILY_BLOCK_START_ROW
+    rows = ws.get(f"A{start_row}:D1000")
+
+    if not rows:
+        raise ValueError("No rows found in the report sheet.")
+
+    first_date = None
+    count = 0
+
+    for row in rows:
+        row = row + [""] * (4 - len(row))
+
+        date_value = str(row[0]).strip()      # A = Date
+        location_value = str(row[3]).strip()  # D = Location
+
+        if not date_value and not location_value and count == 0:
+            continue
+
+        if first_date is None and date_value:
+            first_date = date_value
+
+        if first_date and date_value and date_value != first_date:
+            break
+
+        if not date_value and not location_value and count > 0:
+            break
+
+        count += 1
+
+    if count == 0:
+        raise ValueError("Could not detect daily block rows. Check Date in A and Location in D.")
+
+    return count
+
+
+def insert_daily_report_on_top(spreadsheet, final_schedule):
+    """
+    Insert a new daily report block at the top.
+    Old daily reports move down automatically.
+
+    Layout:
+    A = Date
+    D = Location
+    V = PT Hours
+    X = Assistant Hours
+    Y = PCC Hours
+    """
+
+    ws = spreadsheet.worksheet(SHEET_NAME)
+
+    target_date = get_target_date()
+    pivot = build_clinic_role_totals(final_schedule)
+
+    start_row = DAILY_BLOCK_START_ROW
+    daily_block_rows = get_current_top_block_row_count(ws)
+    end_row = start_row + daily_block_rows - 1
+
+    print(f"Detected daily block rows: {daily_block_rows}")
+
+    # Read current top block as template from A:Y
+    template_rows = ws.get(f"A{start_row}:Y{end_row}")
+
+    new_rows = []
+
+    for row in template_rows:
+        # A:Y = 25 columns
+        row = row + [""] * (25 - len(row))
+
+        location_name = row[3]  # D = Location
+        location_key = clean_text(location_name)
+
+        if location_key:
+            row[0] = target_date  # A = Date
+        else:
+            row[0] = ""
+
+        matched = pivot[pivot["Clinic_Key"] == location_key]
+
+        if matched.empty:
+            row[21] = 0  # V = PT Hours
+            row[23] = 0  # X = Assistant Hours
+            row[24] = 0  # Y = PCC Hours
+        else:
+            row[21] = float(matched["PT"].iloc[0])         # V
+            row[23] = float(matched["Assistant"].iloc[0])  # X
+            row[24] = float(matched["PCC"].iloc[0])        # Y
+
+        new_rows.append(row[:25])
+
+    ws.insert_rows(
+        new_rows,
+        row=start_row,
+        value_input_option="USER_ENTERED"
+    )
+
+    print(f"Inserted new daily report for {target_date} at row {start_row}.")
 
 def run_report():
     target_date = get_target_date()
@@ -488,10 +595,10 @@ def run_report():
 
     spreadsheet = open_google_sheet()
 
-    write_clinic_role_totals_to_schedule_sheet(
-        spreadsheet=spreadsheet,
-        final_schedule=final_schedule
-    )
+    insert_daily_report_on_top(
+    spreadsheet=spreadsheet,
+    final_schedule=final_schedule
+            )
 
     print("\nDone. Existing Sheet1 updated.")
 

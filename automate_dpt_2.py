@@ -61,7 +61,7 @@ DAILY_BLOCK_ROWS = 32
 # X = PCC Hours
 
 # Python list indexes are zero-based
-DATE_COL_INDEX = 0       # A
+DATE_COL_INDEX = 17      # A
 LOCATION_COL_INDEX = 3   # D
 PT_COL_INDEX = 21        # V
 ASSISTANT_COL_INDEX = 22 # W
@@ -458,7 +458,7 @@ def insert_daily_report_on_top(
     log.info(f"Using fixed daily block: rows {start_row}-{end_row} ({block_rows} clinics)")
 
     # Read the current top block before inserting rows.
-    template_rows = ws.get(f"A{start_row}:{TEMPLATE_LAST_COL}{end_row}")
+    template_rows = ws.get(f"R{start_row}:{TEMPLATE_LAST_COL}{end_row}")
 
     start_index = start_row - 1
     end_index = start_index + block_rows

@@ -54,7 +54,7 @@ GOOGLE_CREDENTIALS_FILE = os.getenv(
     "GOOGLE_CREDENTIALS_FILE",
     r"D:\depty_overtime\service_account.json"
 )
-SPREADSHEET_ID =os.getenv("SPREADSHEET_ID")
+#SPREADSHEET_ID =os.getenv("SPREADSHEET_ID")
 
 # Existing Google Sheet tab name
 SHEET_NAME = "Sheet1"
@@ -74,7 +74,11 @@ MERGED_DATE_CELL = "A2"
 # ================= DATE FUNCTIONS =================
 
 def get_target_date():
-    return "2026-06-29"
+    if TARGET_DATE:
+        return TARGET_DATE
+
+    tomorrow = datetime.now(NY).date() + timedelta(days=1)
+    return str(tomorrow)
 
 
 def get_day_range_unix(target_date):

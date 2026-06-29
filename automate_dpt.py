@@ -9,6 +9,7 @@ from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 import os
 from pathlib import Path
+import time 
 
 # ================= CONFIG =================
 BASE_DIR = Path(__file__).resolve().parent
@@ -457,6 +458,7 @@ def append_daily_report_below(spreadsheet, final_schedule):
             }
         ]
     })
+    time.sleep(2)
 
     # Read clinics from the new copied block
     all_clinic_names = ws.get(f"D{start_row}:D{end_row}")

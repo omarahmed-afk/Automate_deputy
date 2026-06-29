@@ -377,6 +377,63 @@ def build_clinic_role_totals(final_schedule):
 
     return pivot[["Clinic_Name", "Clinic_Key", "PT", "Assistant", "PCC"]]
 
+def archive_current_block_below(spreadsheet):
+    """
+    Copy current top daily block and place it directly below.
+    This keeps old date/report under the new one.
+
+    Current block:
+    Rows 2:33
+    Columns A:I
+    """
+
+    ws = spreadsheet.worksheet(SHEET_NAME) 
+    
+    sheet_id = ws.id
+
+    source_start_index = FIRST_DATA_ROW - 1          # row 2 -> index 1
+    source_end_index = LAST_DATA_ROW                 # row 33 -> index 33 exclusive
+
+    archive_start_index = LAST_DATA_ROW              # insert at row 34
+    archive_end_index = archive_start_index + DAILY_BLOCK_ROWS
+
+    spreadsheet.batch_update({
+        "requests": [
+            {
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": archive_start_index,
+                        "endIndex": archive_end_index
+                    },
+                    "inheritFromBefore": False
+                }
+            },
+            {
+                "copyPaste": {
+                    "source": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": source_start_index,
+                        "endRowIndex": source_end_index,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 9   # A:I
+                    },
+                    "destination": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": archive_start_index,
+                        "endRowIndex": archive_end_index,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 9   # A:I
+                    },
+                    "pasteType": "PASTE_NORMAL",
+                    "pasteOrientation": "NORMAL"
+                }
+            }
+        ]
+    })
+
+    print(f"Archived current block under row {LAST_DATA_ROW}.")
 
 def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
@@ -394,6 +451,7 @@ def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
+    archive_current_block_below(spreadsheet)
 
     pivot = build_clinic_role_totals(final_schedule)
 

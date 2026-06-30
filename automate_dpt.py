@@ -66,7 +66,8 @@ FIRST_DATA_ROW = 2
 DAILY_BLOCK_ROWS = 32
 LAST_DATA_ROW = FIRST_DATA_ROW + DAILY_BLOCK_ROWS - 1
 MERGED_DATE_CELL = "A2"
-
+OUTPUT_START_COL = "G"
+OUTPUT_END_COL = "I"
 # Headers are in row 2, clinic data starts row 3
 
 
@@ -401,83 +402,80 @@ def get_next_daily_block_start_row(ws):
     next_start_row = FIRST_DATA_ROW + (existing_blocks * DAILY_BLOCK_ROWS)
 
     return next_start_row
+def format_sheet_date(target_date):
+    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+    return f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
 
 
-def append_daily_report_below(spreadsheet, final_schedule):
+def normalize_sheet_date(value):
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+
+    if not s:
+        return ""
+
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+        try:
+            d = datetime.strptime(s, fmt).date()
+            return f"{d.month}/{d.day}/{d.year}"
+        except ValueError:
+            pass
+
+    return ""
+
+
+def find_existing_date_start_row(ws, sheet_date):
+    target = normalize_sheet_date(sheet_date)
+
+    col_a_values = ws.col_values(1)  # Column A
+
+    for row_number, value in enumerate(col_a_values, start=1):
+        if normalize_sheet_date(value) == target:
+            return row_number
+
+    return None
+
+def fill_existing_date_block_only(spreadsheet, final_schedule):
     """
-    Append new daily report below existing reports.
+    Safe mode for merged-date sheet.
 
-    Example:
-    Rows 2:33   = 28
-    Rows 34:65  = 29
-    Rows 66:97  = 30
+    It searches for the target date in column A.
+    If the date exists, it fills that block only.
+    If the date does not exist, it stops.
 
-    Template is copied from the first block rows 2:33.
-    Date merged cell is updated only at the top-left cell of the new block.
+    No insert rows.
+    No copyPaste.
+    No writing dates.
     """
 
     ws = spreadsheet.worksheet(SHEET_NAME)
-    sheet_id = ws.id
 
     pivot = build_clinic_role_totals(final_schedule)
 
     target_date = get_target_date()
-    date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-    sheet_date = f"{date_obj.month}/{date_obj.day}/{date_obj.year}"
+    sheet_date = format_sheet_date(target_date)
 
-    start_row = get_next_daily_block_start_row(ws)
+    existing_start_row = find_existing_date_start_row(ws, sheet_date)
+
+    if not existing_start_row:
+        raise ValueError(
+            f"Date {sheet_date} was not found in column A. "
+            f"Create/copy the date block manually first, then run the workflow again."
+        )
+
+    start_row = existing_start_row
     end_row = start_row + DAILY_BLOCK_ROWS - 1
 
-    print(f"Appending new daily block to rows {start_row}:{end_row}")
-    print(f"Report date: {sheet_date}")
+    print(f"Date {sheet_date} exists in column A at row {start_row}.")
+    print(f"Filling existing block rows {start_row}:{end_row}.")
 
-    # Copy template from first block rows 2:33 into the new block
-    source_start_index = FIRST_DATA_ROW - 1
-    source_end_index = LAST_DATA_ROW
-
-    destination_start_index = start_row - 1
-    destination_end_index = destination_start_index + DAILY_BLOCK_ROWS
-
-    spreadsheet.batch_update({
-    "requests": [
-        {
-            "insertDimension": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "ROWS",
-                    "startIndex": destination_start_index,
-                    "endIndex": destination_end_index
-                },
-                "inheritFromBefore": False
-            }
-        },
-        {
-            "copyPaste": {
-                "source": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": source_start_index,
-                    "endRowIndex": source_end_index,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 9
-                },
-                "destination": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": destination_start_index,
-                    "endRowIndex": destination_end_index,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 9
-                },
-                "pasteType": "PASTE_NORMAL",
-                "pasteOrientation": "NORMAL"
-            }
-        }
-    ]
-})
-    time.sleep(2)
-
-    # Read clinics from the new copied block
     all_clinic_names = ws.get(f"D{start_row}:D{end_row}")
     all_clinic_names = [row[0] if row else "" for row in all_clinic_names]
+
+    print(f"\nClinics from D{start_row}:D{end_row}:")
+    print(all_clinic_names[:15])
 
     output_values = []
     unmatched = []
@@ -501,13 +499,7 @@ def append_daily_report_below(spreadsheet, final_schedule):
                 float(matched["PCC"].iloc[0])
             ])
 
-    # Date is merged in column A. Update only top-left cell of the new merged block.
-    ws.update(
-        range_name=f"A{start_row}",
-        values=[[sheet_date]]
-    )
-
-    # Update hours in the new block only
+    # automate_dpt.py writes to G:I
     ws.batch_clear([f"G{start_row}:I{end_row}"])
 
     ws.update(
@@ -515,14 +507,17 @@ def append_daily_report_below(spreadsheet, final_schedule):
         values=output_values
     )
 
-    print(f"Appended report {sheet_date} to rows {start_row}:{end_row}")
-    print(f"Hours updated: G{start_row}:I{end_row}")
+    print(f"\nReport {sheet_date} filled in rows {start_row}:{end_row}.")
+    print(f"Hours filled: G{start_row}:I{end_row}")
 
     if unmatched:
         print("\nUnmatched clinics:")
         for clinic in unmatched:
             print("-", clinic)
 
+        print("\nDeputy clinic names available:")
+        for clinic in pivot["Clinic_Name"].tolist():
+            print("-", clinic)
 def write_clinic_role_totals_to_schedule_sheet(spreadsheet, final_schedule):
     """
     Safe update for merged-column sheet.
@@ -651,12 +646,12 @@ def run_report():
 
     spreadsheet = open_google_sheet()
 
-    append_daily_report_below(
+    fill_existing_date_block_only(
         spreadsheet=spreadsheet,
         final_schedule=final_schedule
     )
 
-    print("\nDone. Existing Sheet1 updated.")
+    print("\nDone. Existing date block filled.")
 
 
 if __name__ == "__main__":
